@@ -209,8 +209,12 @@ class Handler(SimpleHTTPRequestHandler):
     def serve_static(self, path):
         if path in ("", "/"):
             path = "/app/index.html"
+        elif path in ("/app", "/app/"):
+            path = "/app/index.html"
         decoded = unquote(path).lstrip("/")
         target = (ROOT / decoded).resolve()
+        if target.is_dir():
+            target = target / "index.html"
         if not str(target).startswith(str(ROOT)) or not target.exists() or target.is_dir():
             self.send_error(404)
             return
