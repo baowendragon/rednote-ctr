@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="1200" viewBox="0 0 900 1200">
+  <rect width="900" height="1200" fill="#157a78"/>
+  <rect x="72" y="82" width="756" height="1036" rx="42" fill="#eff8ff"/>
+  <rect x="132" y="172" width="328" height="54" rx="27" fill="#157a78"/>
+  <text x="156" y="209" fill="#fff" font-size="31" font-family="Arial, sans-serif" font-weight="700">做前须知</text>
+  <text x="132" y="430" fill="#1d2129" font-size="82" font-family="Arial, sans-serif" font-weight="900">光子嫩肤</text>
+  <text x="132" y="526" fill="#1d2129" font-size="82" font-family="Arial, sans-serif" font-weight="900">避坑版</text>
+  <rect x="132" y="780" width="636" height="178" rx="28" fill="#1d2129"/>
+  <text x="174" y="855" fill="#fff" font-size="42" font-family="Arial, sans-serif" font-weight="800">肤质先判断</text>
+  <text x="174" y="917" fill="#fff" font-size="38" font-family="Arial, sans-serif">频次 · 参数 · 护理</text>
+</svg>

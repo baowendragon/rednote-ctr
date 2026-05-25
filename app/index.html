@@ -1,0 +1,333 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>RedNote CTR 封面预测工作台</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-mark">CTR</div>
+          <div>
+            <h1>RedNote CTR</h1>
+            <p>医美封面点击率预测</p>
+          </div>
+        </div>
+
+        <nav class="mode-switch" aria-label="工作区切换">
+          <button class="active" data-view="front" type="button">前台预测</button>
+          <button data-view="test" type="button">内测结果</button>
+          <button data-view="admin" type="button">样本后台</button>
+        </nav>
+
+        <section class="panel front-view">
+          <div class="panel-title">
+            <span>笔记信息</span>
+            <button class="icon-button" id="resetBtn" title="重置候选封面" type="button">↺</button>
+          </div>
+          <label>
+            标题
+            <input id="titleInput" type="text" maxlength="44" value="第一次做热玛吉怎么避坑？" />
+          </label>
+          <label>
+            目标人群
+            <input id="audienceInput" type="text" maxlength="36" value="想做轻医美/抗衰项目的女性" />
+          </label>
+          <div class="toggles">
+            <label class="check">
+              <input id="hasFaceInput" type="checkbox" checked />
+              有真人/人物主体
+            </label>
+            <label class="check">
+              <input id="hasBeforeAfterInput" type="checkbox" />
+              有对比/结果展示
+            </label>
+          </div>
+        </section>
+
+        <section class="panel front-view">
+          <div class="panel-title">
+            <span>候选封面</span>
+          </div>
+          <label class="drop-zone" for="coverInput">
+            <input id="coverInput" type="file" accept="image/*" multiple />
+            <span class="drop-icon">＋</span>
+            <strong>选择封面图片</strong>
+            <small>建议一次上传 10-20 张</small>
+          </label>
+          <p class="upload-note" id="uploadNote">当前 0/20 张，系统会选出前三张。</p>
+          <button class="primary-button" id="addMockBtn" type="button">加入 12 张示例候选</button>
+        </section>
+
+        <section class="panel front-view">
+          <div class="panel-title">
+            <span>发布内测</span>
+          </div>
+          <label>
+            内测笔记标题
+            <input id="testTitleInput" type="text" maxlength="48" value="热玛吉术前避坑清单" />
+          </label>
+          <label>
+            内测说明
+            <input id="testDescInput" type="text" maxlength="70" value="点击你最想打开的一张封面" />
+          </label>
+          <p class="upload-note" id="selectedTestNote">已选择 0 张封面。</p>
+          <button class="primary-button" id="publishTestBtn" type="button">发布封面内测</button>
+        </section>
+
+        <section class="panel admin-view hidden">
+          <div class="panel-title">
+            <span>项目离线样本</span>
+          </div>
+          <p class="upload-note">默认读取 <code>data/samples.csv</code>，图片从 <code>data/images/</code> 匹配。</p>
+          <button class="primary-button" id="loadProjectSamplesBtn" type="button">加载项目样本表</button>
+          <p class="status-text" id="projectImportStatus">等待加载本地样本。</p>
+        </section>
+
+        <section class="panel admin-view hidden">
+          <div class="panel-title">
+            <span>上传样本表</span>
+          </div>
+          <label class="drop-zone compact" for="sampleTableInput">
+            <input id="sampleTableInput" type="file" accept=".csv,.tsv,.xlsx,.xls" />
+            <span class="drop-icon">＋</span>
+            <strong>上传 CSV/TSV</strong>
+            <small>XLSX 嵌图留给后端阶段</small>
+          </label>
+          <p class="upload-note" id="tableImportStatus">字段：filename 或 cover_url、ctr、title、project。</p>
+          <button class="secondary-button" id="importTableBtn" type="button">导入样本表</button>
+          <button class="secondary-button" id="triggerLearningBtn" type="button">重新分析打标</button>
+        </section>
+
+        <section class="panel admin-view hidden">
+          <div class="panel-title">
+            <span>单条样本录入</span>
+          </div>
+          <label>
+            样本标题
+            <input id="sampleTitleInput" type="text" maxlength="44" value="热玛吉术前必问8件事" />
+          </label>
+          <label>
+            医美项目
+            <input id="sampleProjectInput" type="text" maxlength="28" value="热玛吉/抗衰" />
+          </label>
+          <label>
+            真实点击率 %
+            <input id="sampleCtrInput" type="number" min="0.1" max="60" step="0.1" value="9.8" />
+          </label>
+          <div class="toggles">
+            <label class="check">
+              <input id="sampleHasFaceInput" type="checkbox" checked />
+              样本有人物主体
+            </label>
+            <label class="check">
+              <input id="sampleHasBeforeAfterInput" type="checkbox" checked />
+              样本有对比/结果展示
+            </label>
+          </div>
+          <label class="drop-zone compact" for="sampleCoverInput">
+            <input id="sampleCoverInput" type="file" accept="image/*" />
+            <span class="drop-icon">＋</span>
+            <strong>上传样本封面</strong>
+            <small>录入真实 CTR 后成为训练样本</small>
+          </label>
+          <button class="secondary-button" id="addSampleBtn" type="button">加入样本库</button>
+        </section>
+      </aside>
+
+      <main class="main front-view">
+        <header class="topbar">
+          <div>
+            <h2>候选封面对比</h2>
+            <p>基于维护好的历史封面和真实 CTR，按相似样本估算新封面点击率。</p>
+          </div>
+          <div class="score-strip">
+            <div class="score-summary">
+              <span>训练样本</span>
+              <strong id="sampleCount">0</strong>
+            </div>
+            <div class="score-summary">
+              <span>最佳预估</span>
+              <strong id="bestCtr">--</strong>
+            </div>
+          </div>
+        </header>
+
+        <section class="workspace-grid">
+          <div class="candidate-panel">
+            <div class="section-heading">
+              <h3>待选封面</h3>
+              <div class="segmented" aria-label="排序方式">
+                <button class="active" data-sort="score" type="button">按排名</button>
+                <button data-sort="time" type="button">按上传</button>
+              </div>
+            </div>
+            <div class="cover-grid" id="coverGrid"></div>
+            <div class="empty-state" id="emptyState">
+              <div class="empty-visual"></div>
+              <h3>先放几张封面进来</h3>
+              <p>上传候选封面，或用示例封面体验预测流程。</p>
+            </div>
+          </div>
+
+          <aside class="insight-panel">
+            <section class="panel tall">
+              <div class="panel-title">
+                <span>前三封面建议</span>
+                <button class="text-button" id="optimizeTopBtn" type="button">优化前三</button>
+              </div>
+              <div id="recommendation" class="recommendation"></div>
+            </section>
+
+            <section class="panel tall">
+              <div class="panel-title">
+                <span>AI 微调方案</span>
+                <button class="text-button" id="generateVariantsBtn" type="button">生成轻改图</button>
+              </div>
+              <div id="optimizationPanel" class="optimization-panel"></div>
+            </section>
+
+            <section class="panel tall">
+              <div class="panel-title">
+                <span>封面内测</span>
+              </div>
+              <div id="testPublishPanel" class="recommendation"></div>
+            </section>
+
+            <section class="panel tall">
+              <div class="panel-title">
+                <span>高点击样本库</span>
+                <button class="text-button" id="clearSamplesBtn" type="button">清空样本</button>
+              </div>
+              <div class="library-list" id="libraryList"></div>
+            </section>
+          </aside>
+        </section>
+      </main>
+
+      <main class="main test-view hidden">
+        <header class="topbar">
+          <div>
+            <h2>封面内测结果</h2>
+            <p>把候选封面发布成小红书样式双列信息流，收集曝光、点击和真实测试 CTR。</p>
+          </div>
+          <div class="score-strip">
+            <div class="score-summary">
+              <span>内测场次</span>
+              <strong id="testCount">0</strong>
+            </div>
+          </div>
+        </header>
+
+        <section class="test-admin-grid">
+          <section class="panel">
+            <div class="panel-title">
+              <span>已发布内测</span>
+              <button class="text-button" id="clearTestsBtn" type="button">清空内测</button>
+            </div>
+            <div class="test-list" id="testList"></div>
+          </section>
+          <section class="panel">
+            <div class="panel-title">
+              <span>结果排行</span>
+            </div>
+            <div class="test-results" id="testResults"></div>
+          </section>
+        </section>
+      </main>
+
+      <main class="main admin-view hidden">
+        <header class="topbar">
+          <div>
+            <h2>样本库后台</h2>
+            <p>维护离线样本、真实点击率、识别标签和模型学习状态。</p>
+          </div>
+          <div class="score-strip">
+            <div class="score-summary">
+              <span>训练样本</span>
+              <strong id="adminSampleCount">0</strong>
+            </div>
+          </div>
+        </header>
+
+        <section class="admin-grid">
+          <section class="panel">
+            <div class="panel-title">
+              <span>学习分析状态</span>
+            </div>
+            <div class="recommendation" id="learningStatus">
+              <strong>等待触发</strong>
+              <p>导入样本后可以重新分析打标，系统会刷新视觉特征和自动标签。</p>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-title">
+              <span>样本导入格式</span>
+            </div>
+            <div class="recommendation">
+              <strong>离线 MVP 字段</strong>
+              <p>最简字段只需要 <code>filename</code> 和 <code>ctr</code>。图片文件放在 <code>data/images/</code>，后续后端再支持 Excel 嵌图抽取。</p>
+              <div class="prompt-box">filename,ctr,title,project,has_face,has_before_after</div>
+            </div>
+          </section>
+
+          <section class="panel wide">
+            <div class="panel-title">
+              <span>训练样本库</span>
+              <button class="text-button" id="adminClearSamplesBtn" type="button">清空样本</button>
+            </div>
+            <div class="library-list" id="adminLibraryList"></div>
+          </section>
+        </section>
+      </main>
+    </div>
+
+    <template id="coverCardTemplate">
+      <article class="cover-card">
+        <div class="cover-rank"></div>
+        <img alt="候选封面预览" />
+        <div class="cover-body">
+          <div class="cover-headline">
+            <strong class="cover-name"></strong>
+            <span class="ctr-value"></span>
+          </div>
+          <div class="meter">
+            <span></span>
+          </div>
+          <dl class="metrics"></dl>
+          <p class="reason"></p>
+          <div class="cover-actions">
+            <button class="secondary-button select-test-btn" type="button">加入内测</button>
+            <button class="secondary-button generate-cover-btn" type="button">一键轻改</button>
+          </div>
+          <button class="secondary-button optimize-cover-btn" type="button">AI 微调方案</button>
+        </div>
+      </article>
+    </template>
+
+    <div class="public-test-page hidden" id="publicTestPage">
+      <header class="public-header">
+        <button class="text-button" id="backToAppBtn" type="button">返回工作台</button>
+        <div>
+          <strong id="publicTestTitle">封面内测</strong>
+          <p id="publicTestDesc">点击你最想打开的一张封面</p>
+        </div>
+      </header>
+      <main class="rednote-feed" id="publicFeed"></main>
+      <div class="click-modal hidden" id="clickModal">
+        <div class="click-modal-card">
+          <button class="icon-button" id="closeClickModal" type="button">×</button>
+          <img id="clickedCoverImage" alt="已点击封面" />
+          <strong id="clickedCoverTitle"></strong>
+          <p>这次点击已经记录到内测结果里。</p>
+        </div>
+      </div>
+    </div>
+
+    <script src="./app.js"></script>
+  </body>
+</html>
