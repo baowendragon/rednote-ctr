@@ -5,18 +5,20 @@ const PROJECT_SAMPLE_CSV = "../data/samples.csv";
 const PROJECT_IMAGE_DIR = "../data/images/";
 const STORAGE_KEY = "rednoteCtrLibrary";
 const TEST_STORAGE_KEY = "rednoteCtrTests";
+const CANDIDATE_STORAGE_KEY = "rednoteCtrCandidates";
 const API_ENABLED = location.protocol === "http:" || location.protocol === "https:";
 
 const $ = (selector) => document.querySelector(selector);
 const coverGrid = $("#coverGrid");
 const emptyState = $("#emptyState");
 const template = $("#coverCardTemplate");
+const savedCandidateState = loadCandidateState();
 
 const state = {
-  covers: [],
+  covers: savedCandidateState.covers,
   library: loadLibrary(),
   tests: loadTests(),
-  selectedCoverIds: new Set(),
+  selectedCoverIds: new Set(savedCandidateState.selectedCoverIds),
   sort: "score",
   optimizationCoverId: null,
   pendingSampleImage: null,
@@ -66,6 +68,36 @@ function loadTests() {
 
 function saveTests() {
   localStorage.setItem(TEST_STORAGE_KEY, JSON.stringify(state.tests.slice(0, 100)));
+}
+
+function loadCandidateState() {
+  try {
+    const saved = sessionStorage.getItem(CANDIDATE_STORAGE_KEY);
+    if (!saved) return { covers: [], selectedCoverIds: [] };
+    const parsed = JSON.parse(saved);
+    const covers = Array.isArray(parsed.covers) ? parsed.covers.slice(0, MAX_COVERS) : [];
+    const coverIds = new Set(covers.map((cover) => cover.id));
+    const selectedCoverIds = Array.isArray(parsed.selectedCoverIds)
+      ? parsed.selectedCoverIds.filter((id) => coverIds.has(id))
+      : [];
+    return { covers, selectedCoverIds };
+  } catch {
+    return { covers: [], selectedCoverIds: [] };
+  }
+}
+
+function saveCandidateState() {
+  try {
+    sessionStorage.setItem(
+      CANDIDATE_STORAGE_KEY,
+      JSON.stringify({
+        covers: state.covers.slice(0, MAX_COVERS),
+        selectedCoverIds: [...state.selectedCoverIds],
+      }),
+    );
+  } catch {
+    // Large uploaded images can exceed browser storage. The current page state still works.
+  }
 }
 
 async function apiRequest(path, options = {}) {
@@ -346,6 +378,7 @@ async function addCover(name, image) {
     ...metrics,
     reason: buildReason(metrics),
   });
+  saveCandidateState();
   render();
 }
 
@@ -354,6 +387,7 @@ function recalculateAll() {
     const metrics = calculateScore(cover);
     return { ...cover, ...metrics, reason: buildReason(metrics) };
   });
+  saveCandidateState();
   render();
 }
 
@@ -607,8 +641,8 @@ function rankTestCovers(test) {
 }
 
 function makeTestUrl(testId) {
-  const base = `${location.origin}${location.pathname}`;
-  return `${base}#test=${testId}`;
+  if (location.protocol === "file:") return `${location.href.split("#")[0]}#test=${testId}`;
+  return `${location.origin}/test/${testId}`;
 }
 
 async function publishTest() {
@@ -651,9 +685,10 @@ async function publishTest() {
 
   state.tests.unshift(test);
   state.selectedCoverIds.clear();
+  saveCandidateState();
   saveTests();
   render();
-  location.hash = `test=${test.id}`;
+  history.pushState({}, "", makeTestUrl(test.id));
   showPublicTestFromHash();
 }
 
@@ -942,20 +977,27 @@ async function loadProjectSamples() {
   }
 }
 
+function getRouteTestId() {
+  const pathMatch = location.pathname.match(/^\/test\/([^/]+)$/);
+  if (pathMatch) return decodeURIComponent(pathMatch[1]);
+  const hashMatch = location.hash.match(/^#test=(.+)$/);
+  return hashMatch ? hashMatch[1] : "";
+}
+
 function showPublicTestFromHash() {
-  const match = location.hash.match(/^#test=(.+)$/);
+  const testId = getRouteTestId();
   const app = document.querySelector(".app-shell");
   const page = $("#publicTestPage");
-  if (!match) {
+  if (!testId) {
     app.classList.remove("hidden");
     page.classList.add("hidden");
     return;
   }
 
-  let test = state.tests.find((item) => item.id === match[1]);
+  let test = state.tests.find((item) => item.id === testId);
   if (!test) {
     if (API_ENABLED) {
-      apiRequest(`/api/tests/${match[1]}`)
+      apiRequest(`/api/tests/${testId}`)
         .then((payload) => {
           state.tests.unshift(payload);
           saveTests();
@@ -965,7 +1007,7 @@ function showPublicTestFromHash() {
           app.classList.remove("hidden");
           page.classList.add("hidden");
           alert("没有找到这场内测。");
-          location.hash = "";
+          history.replaceState({}, "", "/app/");
         });
       return;
     }
@@ -1012,7 +1054,6 @@ async function renderPublicTest(test) {
           <div>
             <strong>${cover.name}</strong>
             <p>${test.description}</p>
-            <span>预测 CTR ${cover.predictedCtr}%</span>
           </div>
         </article>
       `,
@@ -1187,6 +1228,7 @@ coverGrid.addEventListener("click", (event) => {
     } else {
       state.selectedCoverIds.add(coverId);
     }
+    saveCandidateState();
     render();
     return;
   }
@@ -1200,7 +1242,7 @@ $("#testList").addEventListener("click", async (event) => {
   const openButton = event.target.closest(".open-test-btn");
   const copyButton = event.target.closest(".copy-test-btn");
   if (openButton) {
-    location.hash = `test=${openButton.dataset.testId}`;
+    history.pushState({}, "", makeTestUrl(openButton.dataset.testId));
     showPublicTestFromHash();
     return;
   }
@@ -1221,7 +1263,11 @@ $("#publicFeed").addEventListener("click", (event) => {
 });
 
 $("#backToAppBtn").addEventListener("click", () => {
-  location.hash = "";
+  if (location.protocol === "file:") {
+    location.hash = "";
+  } else {
+    history.pushState({}, "", "/app/");
+  }
   showPublicTestFromHash();
   render();
 });
@@ -1231,6 +1277,7 @@ $("#closeClickModal").addEventListener("click", () => {
 });
 
 window.addEventListener("hashchange", showPublicTestFromHash);
+window.addEventListener("popstate", showPublicTestFromHash);
 
 function handleSampleDelete(event) {
   const button = event.target.closest(".delete-sample-btn");
@@ -1246,6 +1293,8 @@ $("#adminLibraryList").addEventListener("click", handleSampleDelete);
 $("#resetBtn").addEventListener("click", () => {
   state.covers = [];
   state.optimizationCoverId = null;
+  state.selectedCoverIds.clear();
+  sessionStorage.removeItem(CANDIDATE_STORAGE_KEY);
   render();
 });
 

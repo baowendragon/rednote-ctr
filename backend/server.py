@@ -211,6 +211,8 @@ class Handler(SimpleHTTPRequestHandler):
             path = "/app/index.html"
         elif path in ("/app", "/app/"):
             path = "/app/index.html"
+        elif path.startswith("/test/"):
+            path = "/app/index.html"
         decoded = unquote(path).lstrip("/")
         target = (ROOT / decoded).resolve()
         if target.is_dir():
