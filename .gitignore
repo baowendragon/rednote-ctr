@@ -1,5 +1,10 @@
 .DS_Store
 node_modules
 *.log
+.env
+.env.local
+__pycache__/
+*.pyc
 data/*.db
 data/*.db-*
+data/ai_feature_cache.json

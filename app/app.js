@@ -15,13 +15,21 @@ const CANDIDATE_STORAGE_KEY = "rednoteCtrCandidates";
 const API_ENABLED = location.protocol === "http:" || location.protocol === "https:";
 const STATIC_CTR_MODEL = window.REDNOTE_CTR_MODEL || null;
 const DEFAULT_FEATURE_WEIGHTS = {
-  brightness: 0.14,
-  saturation: 0.14,
-  contrast: 0.16,
-  warm: 0.08,
-  titleHook: 0.2,
-  hasFace: 0.14,
-  hasBeforeAfter: 0.14,
+  brightness: 0.07,
+  saturation: 0.06,
+  contrast: 0.07,
+  warm: 0.04,
+  titleHook: 0.09,
+  hasFace: 0.07,
+  hasBeforeAfter: 0.07,
+  textDensity: 0.08,
+  subjectProminence: 0.09,
+  medicalTrustSignal: 0.07,
+  hookStrength: 0.1,
+  beforeAfterStrength: 0.06,
+  emotionalTension: 0.05,
+  compositionClarity: 0.08,
+  thumbnailLegibility: 0.1,
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -282,14 +290,26 @@ async function compressImageSafe(src, options = {}) {
 }
 
 function buildFeatures(visual, inputs) {
+  const title = inputs.title || "";
+  const titleHook = Math.round(inputs.titleScore ?? titleHookScore(title));
+  const hasFace = inputs.hasFace ? 100 : 0;
+  const hasBeforeAfter = inputs.hasBeforeAfter ? 100 : 0;
   return {
     brightness: Math.round(visual.brightnessScore),
     saturation: Math.round(visual.saturationScore),
     contrast: Math.round(visual.contrastScore),
     warm: Math.round(visual.warmScore),
-    titleHook: Math.round(inputs.titleScore ?? titleHookScore(inputs.title || "")),
-    hasFace: inputs.hasFace ? 100 : 0,
-    hasBeforeAfter: inputs.hasBeforeAfter ? 100 : 0,
+    titleHook,
+    hasFace,
+    hasBeforeAfter,
+    textDensity: clamp(Math.round(title.length * 3.2), 20, 88),
+    subjectProminence: clamp(Math.round(visual.contrastScore * 0.42 + visual.brightnessScore * 0.18 + (hasFace ? 34 : 8)), 0, 100),
+    medicalTrustSignal: clamp(Math.round(titleHook * 0.24 + (hasFace ? 34 : 12) + (hasBeforeAfter ? 22 : 0)), 0, 100),
+    hookStrength: titleHook,
+    beforeAfterStrength: hasBeforeAfter ? 78 : 24,
+    emotionalTension: clamp(Math.round(titleHook * 0.55 + (/[!！?？]/.test(title) ? 26 : 8)), 0, 100),
+    compositionClarity: clamp(Math.round(visual.brightnessScore * 0.35 + visual.contrastScore * 0.45 + 12), 0, 100),
+    thumbnailLegibility: clamp(Math.round(visual.brightnessScore * 0.28 + visual.contrastScore * 0.42 + visual.saturationScore * 0.18 + 8), 0, 100),
   };
 }
 
@@ -301,6 +321,9 @@ function inferTags(features, inputs = {}) {
   if (features.brightness >= 62) tags.push("明亮清晰");
   if (features.hasFace >= 100) tags.push("人物主体");
   if (features.hasBeforeAfter >= 100) tags.push("对比展示");
+  if (features.textDensity >= 70) tags.push("信息密度高");
+  if (features.thumbnailLegibility >= 72) tags.push("缩略图清晰");
+  if (features.medicalTrustSignal >= 72) tags.push("信任信号强");
   if ((inputs.title || "").includes("避坑")) tags.push("避坑内容");
   if ((inputs.title || "").includes("术前")) tags.push("术前决策");
   return tags.slice(0, 5);
@@ -314,6 +337,8 @@ function calculateScore(visual) {
   return {
     score: ctrToScore(prediction.ctr),
     ctr: prediction.ctr,
+    regressionCtr: prediction.regressionCtr,
+    similarityCtr: prediction.similarityCtr,
     confidence: prediction.confidence,
     similarSamples: prediction.similarSamples,
     predictionMode: prediction.mode,
@@ -329,6 +354,9 @@ function buildReason(metrics) {
       .slice(0, 2)
       .map((sample) => `${sample.name} ${sample.ctr}%`)
       .join("、");
+    if (metrics.regressionCtr) {
+      return `基于已部署的离线回归模型估算，回归预测 ${metrics.regressionCtr}%，相似样本参考：${sampleText}`;
+    }
     return `基于已部署的离线 CTR 模型估算，最接近：${sampleText}`;
   }
   if (metrics.predictionMode === "trained") {
@@ -359,6 +387,17 @@ function getFeatureWeights() {
   return DEFAULT_FEATURE_WEIGHTS;
 }
 
+function predictRegressionCtr(features) {
+  const regression = !getLocalTrainingSamples().length ? STATIC_CTR_MODEL?.regression : null;
+  if (!regression?.coefficients) return null;
+  const raw = Object.entries(regression.coefficients).reduce((sum, [key, coefficient]) => {
+    return sum + Number(coefficient || 0) * ((features[key] || 0) / 100);
+  }, Number(regression.intercept || 0));
+  const min = Number(STATIC_CTR_MODEL?.minCtr || 1);
+  const max = Number(STATIC_CTR_MODEL?.maxCtr || Math.max(min, industryBenchmark.base * 3));
+  return clamp(raw, min * 0.72, max * 1.04);
+}
+
 function predictCtr(features) {
   const localSamples = getLocalTrainingSamples();
   const samples = localSamples.length ? localSamples : getStaticTrainingSamples();
@@ -383,12 +422,17 @@ function predictCtr(features) {
     .slice(0, 5);
 
   const totalWeight = ranked.reduce((sum, sample) => sum + sample.similarity, 0);
-  const ctr = ranked.reduce((sum, sample) => sum + Number(sample.ctr) * sample.similarity, 0) / totalWeight;
+  const similarityCtr = ranked.reduce((sum, sample) => sum + Number(sample.ctr) * sample.similarity, 0) / totalWeight;
+  const regressionCtr = predictRegressionCtr(features);
+  const ctr = regressionCtr === null ? similarityCtr : regressionCtr * 0.72 + similarityCtr * 0.28;
   const avgSimilarity = ranked.reduce((sum, sample) => sum + sample.similarity, 0) / ranked.length;
-  const confidence = clamp(Math.round(Math.min(samples.length / 30, 1) * 42 + Math.min(avgSimilarity / 18, 1) * 53), 30, 95);
+  const regressionLift = regressionCtr === null ? 0 : 9;
+  const confidence = clamp(Math.round(Math.min(samples.length / 30, 1) * 42 + Math.min(avgSimilarity / 18, 1) * 44 + regressionLift), 30, 95);
 
   return {
     ctr: Number(ctr.toFixed(1)),
+    regressionCtr: regressionCtr === null ? null : Number(regressionCtr.toFixed(1)),
+    similarityCtr: Number(similarityCtr.toFixed(1)),
     confidence,
     similarSamples: ranked,
     mode,
