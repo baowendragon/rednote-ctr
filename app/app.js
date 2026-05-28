@@ -1,12 +1,28 @@
 const MAX_COVERS = 20;
 const TOP_PICK_COUNT = 3;
 const MIN_TRAINING_SAMPLES = 3;
+const UPLOAD_IMAGE_MAX_WIDTH = 900;
+const UPLOAD_IMAGE_MAX_HEIGHT = 1200;
+const UPLOAD_IMAGE_QUALITY = 0.78;
+const TEST_IMAGE_MAX_WIDTH = 720;
+const TEST_IMAGE_MAX_HEIGHT = 960;
+const TEST_IMAGE_QUALITY = 0.72;
 const PROJECT_SAMPLE_CSV = "../data/samples.csv";
 const PROJECT_IMAGE_DIR = "../data/images/";
 const STORAGE_KEY = "rednoteCtrLibrary";
 const TEST_STORAGE_KEY = "rednoteCtrTests";
 const CANDIDATE_STORAGE_KEY = "rednoteCtrCandidates";
 const API_ENABLED = location.protocol === "http:" || location.protocol === "https:";
+const STATIC_CTR_MODEL = window.REDNOTE_CTR_MODEL || null;
+const DEFAULT_FEATURE_WEIGHTS = {
+  brightness: 0.14,
+  saturation: 0.14,
+  contrast: 0.16,
+  warm: 0.08,
+  titleHook: 0.2,
+  hasFace: 0.14,
+  hasBeforeAfter: 0.14,
+};
 
 const $ = (selector) => document.querySelector(selector);
 const coverGrid = $("#coverGrid");
@@ -54,7 +70,11 @@ function loadLibrary() {
 }
 
 function saveLibrary() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state.library.slice(0, 500)));
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state.library.slice(0, 500)));
+  } catch {
+    // Large image data can exceed browser storage; keep the in-memory session usable.
+  }
 }
 
 function loadTests() {
@@ -67,7 +87,11 @@ function loadTests() {
 }
 
 function saveTests() {
-  localStorage.setItem(TEST_STORAGE_KEY, JSON.stringify(state.tests.slice(0, 100)));
+  try {
+    localStorage.setItem(TEST_STORAGE_KEY, JSON.stringify(state.tests.slice(0, 100)));
+  } catch {
+    // Published tests are persisted by the backend in online mode.
+  }
 }
 
 function loadCandidateState() {
@@ -229,6 +253,34 @@ function loadImage(src) {
   });
 }
 
+async function compressImage(src, options = {}) {
+  const image = await loadImage(src);
+  const maxWidth = options.maxWidth || UPLOAD_IMAGE_MAX_WIDTH;
+  const maxHeight = options.maxHeight || UPLOAD_IMAGE_MAX_HEIGHT;
+  const quality = options.quality || UPLOAD_IMAGE_QUALITY;
+  const naturalWidth = image.naturalWidth || image.width;
+  const naturalHeight = image.naturalHeight || image.height;
+  const scale = Math.min(maxWidth / naturalWidth, maxHeight / naturalHeight, 1);
+  const width = Math.max(1, Math.round(naturalWidth * scale));
+  const height = Math.max(1, Math.round(naturalHeight * scale));
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, width, height);
+  ctx.drawImage(image, 0, 0, width, height);
+  return canvas.toDataURL("image/jpeg", quality);
+}
+
+async function compressImageSafe(src, options = {}) {
+  try {
+    return await compressImage(src, options);
+  } catch {
+    return src;
+  }
+}
+
 function buildFeatures(visual, inputs) {
   return {
     brightness: Math.round(visual.brightnessScore),
@@ -272,6 +324,13 @@ function calculateScore(visual) {
 }
 
 function buildReason(metrics) {
+  if (metrics.predictionMode === "offline") {
+    const sampleText = metrics.similarSamples
+      .slice(0, 2)
+      .map((sample) => `${sample.name} ${sample.ctr}%`)
+      .join("、");
+    return `基于已部署的离线 CTR 模型估算，最接近：${sampleText}`;
+  }
   if (metrics.predictionMode === "trained") {
     const sampleText = metrics.similarSamples
       .slice(0, 2)
@@ -282,24 +341,41 @@ function buildReason(metrics) {
   return `训练样本少于 ${MIN_TRAINING_SAMPLES} 条，当前仅用临时基准估算。先导入真实 CTR 样本，预测会更可靠。`;
 }
 
-function getTrainingSamples() {
+function getLocalTrainingSamples() {
   return state.library.filter((item) => item.features && Number.isFinite(Number(item.ctr)));
 }
 
+function getStaticTrainingSamples() {
+  return STATIC_CTR_MODEL?.samples?.filter((item) => item.features && Number.isFinite(Number(item.ctr))) || [];
+}
+
+function getTrainingSamples() {
+  const localSamples = getLocalTrainingSamples();
+  return localSamples.length ? localSamples : getStaticTrainingSamples();
+}
+
+function getFeatureWeights() {
+  if (!getLocalTrainingSamples().length && STATIC_CTR_MODEL?.weights) return STATIC_CTR_MODEL.weights;
+  return DEFAULT_FEATURE_WEIGHTS;
+}
+
 function predictCtr(features) {
-  const samples = getTrainingSamples();
+  const localSamples = getLocalTrainingSamples();
+  const samples = localSamples.length ? localSamples : getStaticTrainingSamples();
+  const mode = localSamples.length ? "trained" : "offline";
   if (samples.length < MIN_TRAINING_SAMPLES) {
     return {
       ctr: fallbackCtr(features, samples),
       confidence: Math.max(18, samples.length * 12),
       similarSamples: samples.slice(0, 3),
-      mode: "fallback",
+      mode: samples.length ? mode : "fallback",
     };
   }
 
+  const weights = getFeatureWeights();
   const ranked = samples
     .map((sample) => {
-      const distance = featureDistance(features, sample.features);
+      const distance = featureDistance(features, sample.features, weights);
       const similarity = 1 / Math.pow(distance + 0.08, 2);
       return { ...sample, distance, similarity };
     })
@@ -315,20 +391,11 @@ function predictCtr(features) {
     ctr: Number(ctr.toFixed(1)),
     confidence,
     similarSamples: ranked,
-    mode: "trained",
+    mode,
   };
 }
 
-function featureDistance(a, b) {
-  const weights = {
-    brightness: 0.14,
-    saturation: 0.14,
-    contrast: 0.16,
-    warm: 0.08,
-    titleHook: 0.2,
-    hasFace: 0.14,
-    hasBeforeAfter: 0.14,
-  };
+function featureDistance(a, b, weights = DEFAULT_FEATURE_WEIGHTS) {
   const weightedSum = Object.entries(weights).reduce((sum, [key, weight]) => {
     const diff = ((a[key] ?? 0) - (b[key] ?? 0)) / 100;
     return sum + Math.pow(diff, 2) * weight;
@@ -340,6 +407,10 @@ function fallbackCtr(features, samples) {
   if (samples.length) {
     const avgCtr = samples.reduce((sum, sample) => sum + Number(sample.ctr), 0) / samples.length;
     return Number(avgCtr.toFixed(1));
+  }
+
+  if (STATIC_CTR_MODEL?.baselineCtr) {
+    return Number(STATIC_CTR_MODEL.baselineCtr.toFixed(1));
   }
 
   const raw =
@@ -652,48 +723,76 @@ async function publishTest() {
     return;
   }
 
-  const payload = {
-    title: $("#testTitleInput").value.trim() || getInputs().title || "封面内测",
-    description: $("#testDescInput").value.trim() || "点击你最想打开的一张封面",
-    covers: selected.map((cover) => ({
-      name: cover.name,
-      image: cover.image,
-      predictedCtr: cover.ctr,
-      sourceCoverId: cover.id,
-    })),
-  };
+  const publishButton = $("#publishTestBtn");
+  const originalText = publishButton.textContent;
+  publishButton.disabled = true;
+  publishButton.textContent = "发布中...";
+  $("#selectedTestNote").textContent = `正在发布 ${selected.length} 张封面...`;
 
-  let test;
+  let payload;
   try {
-    test = await apiRequest("/api/tests", {
+    payload = {
+      title: $("#testTitleInput").value.trim() || getInputs().title || "封面内测",
+      description: $("#testDescInput").value.trim() || "点击你最想打开的一张封面",
+      covers: await Promise.all(
+        selected.map(async (cover) => ({
+          name: cover.name,
+          image: await compressImageSafe(cover.image, {
+            maxWidth: TEST_IMAGE_MAX_WIDTH,
+            maxHeight: TEST_IMAGE_MAX_HEIGHT,
+            quality: TEST_IMAGE_QUALITY,
+          }),
+          predictedCtr: cover.ctr,
+          sourceCoverId: cover.id,
+        })),
+      ),
+    };
+
+    const test = await apiRequest("/api/tests", {
       method: "POST",
       body: JSON.stringify(payload),
     });
-  } catch {
-    test = {
-      id: crypto.randomUUID(),
-      ...payload,
-      createdAt: Date.now(),
-      covers: payload.covers.map((cover) => ({
-        id: crypto.randomUUID(),
-        ...cover,
-        views: 0,
-        clicks: 0,
-      })),
-    };
-  }
 
-  state.tests.unshift(test);
-  state.selectedCoverIds.clear();
-  saveCandidateState();
-  saveTests();
-  render();
-  history.pushState({}, "", makeTestUrl(test.id));
-  showPublicTestFromHash();
+    state.tests = [test, ...state.tests.filter((item) => item.id !== test.id)];
+    state.selectedCoverIds.clear();
+    saveCandidateState();
+    saveTests();
+    render();
+    history.pushState({}, "", makeTestUrl(test.id));
+    showPublicTest(test);
+  } catch (error) {
+    if (!API_ENABLED) {
+      const test = {
+        id: crypto.randomUUID(),
+        ...payload,
+        createdAt: Date.now(),
+        covers: payload.covers.map((cover) => ({
+          id: crypto.randomUUID(),
+          ...cover,
+          views: 0,
+          clicks: 0,
+        })),
+      };
+      state.tests.unshift(test);
+      state.selectedCoverIds.clear();
+      saveCandidateState();
+      saveTests();
+      render();
+      history.pushState({}, "", makeTestUrl(test.id));
+      showPublicTest(test);
+      return;
+    }
+
+    $("#selectedTestNote").textContent = `已选择 ${selected.length} 张封面。`;
+    alert(`发布失败：${error.message || "请稍后重试"}`);
+  } finally {
+    publishButton.disabled = false;
+    publishButton.textContent = originalText;
+  }
 }
 
 function renderUploadNote() {
-  $("#uploadNote").textContent = `当前 ${state.covers.length}/${MAX_COVERS} 张，系统会选出前三张。`;
+  $("#uploadNote").textContent = `当前 ${state.covers.length}/${MAX_COVERS} 张，上传后会自动压缩，系统会选出前三张。`;
 }
 
 function renderSampleCount() {
@@ -708,28 +807,32 @@ function renderLibrary() {
 function renderLibraryInto(selector) {
   const target = $(selector);
   if (!target) return;
+  const localSamples = getLocalTrainingSamples();
+  const staticSamples = getStaticTrainingSamples();
+  const samples = localSamples.length ? localSamples : staticSamples;
+  const isStaticModel = !localSamples.length && staticSamples.length;
 
-  if (!state.library.length) {
+  if (!samples.length) {
     target.innerHTML = `
       <div class="recommendation">
         <strong>样本库为空</strong>
-        <p>录入优质封面和真实点击率后，预测会从这些样本里学习。</p>
+        <p>录入优质封面和真实点击率后，先在本地运行离线训练脚本，再部署模型文件。</p>
       </div>
     `;
     return;
   }
 
-  target.innerHTML = state.library
+  target.innerHTML = samples
     .map(
       (item) => `
         <div class="library-item" data-sample-id="${item.id}">
-          <img src="${item.image}" alt="${item.name}">
+          <img src="${item.image || makeMockCover("#e9415a", "#fff0ca", String(item.name).slice(0, 8), isStaticModel ? "离线模型" : "样本")}" alt="${item.name}">
           <div>
             <strong>${item.name}</strong>
             <span>${item.project || item.category || "医美样本"} · ${(item.tags || []).slice(0, 2).join(" / ") || "待打标"}</span>
           </div>
           <div class="library-score">${item.ctr}%</div>
-          <button class="icon-button delete-sample-btn" data-sample-id="${item.id}" title="删除样本" type="button">×</button>
+          ${isStaticModel ? "" : `<button class="icon-button delete-sample-btn" data-sample-id="${item.id}" title="删除样本" type="button">×</button>`}
         </div>
       `,
     )
@@ -780,7 +883,7 @@ async function createLocalOptimizedVariant(cover, variantIndex = 0) {
   ctx.strokeStyle = accent;
   ctx.lineWidth = 14;
   ctx.strokeRect(7, 7, 886, 1186);
-  return canvas.toDataURL("image/jpeg", 0.92);
+  return canvas.toDataURL("image/jpeg", UPLOAD_IMAGE_QUALITY);
 }
 
 function roundRect(ctx, x, y, width, height, radius) {
@@ -836,6 +939,14 @@ async function addTrainingSample({ name, project, ctr, image, inputs, sourceId }
 
 async function runLearningAnalysis() {
   const status = $("#learningStatus");
+  if (!state.library.length && STATIC_CTR_MODEL?.sampleCount) {
+    status.innerHTML = `
+      <strong>正在使用离线模型</strong>
+      <p>当前线上模型已内置 ${STATIC_CTR_MODEL.sampleCount} 条训练样本。要更新模型，请先更新 data/samples.csv，再在本地运行 node scripts/train_ctr_model.mjs 并重新部署。</p>
+    `;
+    return;
+  }
+
   status.innerHTML = `
     <strong>分析中</strong>
     <p>正在重新提取样本特征并生成识别标签...</p>
@@ -1095,15 +1206,26 @@ function readFile(file) {
   });
 }
 
+async function readCompressedFile(file) {
+  const image = await readFile(file);
+  return compressImageSafe(image, {
+    maxWidth: UPLOAD_IMAGE_MAX_WIDTH,
+    maxHeight: UPLOAD_IMAGE_MAX_HEIGHT,
+    quality: UPLOAD_IMAGE_QUALITY,
+  });
+}
+
 $("#coverInput").addEventListener("change", async (event) => {
   const remaining = MAX_COVERS - state.covers.length;
   const files = [...event.target.files].slice(0, remaining);
   if (event.target.files.length > remaining) alert(`本次只加入 ${remaining} 张，候选封面最多 ${MAX_COVERS} 张。`);
   for (const file of files) {
-    const image = await readFile(file);
+    $("#uploadNote").textContent = `正在压缩：${file.name}`;
+    const image = await readCompressedFile(file);
     await addCover(file.name.replace(/\.[^.]+$/, ""), image);
   }
   event.target.value = "";
+  renderUploadNote();
 });
 
 $("#addMockBtn").addEventListener("click", async () => {

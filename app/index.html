@@ -84,7 +84,7 @@
           </div>
           <p class="upload-note">默认读取 <code>data/samples.csv</code>，图片从 <code>data/images/</code> 匹配。</p>
           <button class="primary-button" id="loadProjectSamplesBtn" type="button">加载项目样本表</button>
-          <p class="status-text" id="projectImportStatus">等待加载本地样本。</p>
+          <p class="status-text" id="projectImportStatus">线上默认使用已部署的离线模型；本地调试时可加载样本表覆盖。</p>
         </section>
 
         <section class="panel admin-view hidden">
@@ -259,8 +259,8 @@
               <span>学习分析状态</span>
             </div>
             <div class="recommendation" id="learningStatus">
-              <strong>等待触发</strong>
-              <p>导入样本后可以重新分析打标，系统会刷新视觉特征和自动标签。</p>
+              <strong>离线模型已接入</strong>
+              <p>更新真实样本后，在本地运行训练脚本生成模型文件，再部署到线上。</p>
             </div>
           </section>
 
@@ -270,7 +270,7 @@
             </div>
             <div class="recommendation">
               <strong>离线 MVP 字段</strong>
-              <p>最简字段只需要 <code>filename</code> 和 <code>ctr</code>。图片文件放在 <code>data/images/</code>，后续后端再支持 Excel 嵌图抽取。</p>
+              <p>最简字段只需要 <code>filename</code> 和 <code>ctr</code>。建议补充标题、项目、人物主体、前后对比；后续可把视觉模型提取的特征列写入 CSV。</p>
               <div class="prompt-box">filename,ctr,title,project,has_face,has_before_after</div>
             </div>
           </section>
@@ -328,6 +328,7 @@
       </div>
     </div>
 
+    <script src="./trained-model.js"></script>
     <script src="./app.js"></script>
   </body>
 </html>
