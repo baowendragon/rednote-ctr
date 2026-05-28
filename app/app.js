@@ -436,7 +436,7 @@ function ctrToScore(ctr) {
 
 async function addCover(name, image) {
   if (state.covers.length >= MAX_COVERS) {
-    alert(`最多支持 ${MAX_COVERS} 张候选封面。`);
+    showCoverLimitNotice();
     return;
   }
   const visual = await analyzeImage(image);
@@ -471,6 +471,14 @@ function sortedCovers() {
 
 function rankedCovers() {
   return [...state.covers].sort((a, b) => b.ctr - a.ctr);
+}
+
+function remainingCoverSlots() {
+  return Math.max(0, MAX_COVERS - state.covers.length);
+}
+
+function showCoverLimitNotice() {
+  alert(`候选封面已经满了 ${MAX_COVERS} 张。请先点击左上角“↺”重置候选封面，再上传新图片。`);
 }
 
 function render() {
@@ -792,7 +800,13 @@ async function publishTest() {
 }
 
 function renderUploadNote() {
-  $("#uploadNote").textContent = `当前 ${state.covers.length}/${MAX_COVERS} 张，上传后会自动压缩，系统会选出前三张。`;
+  const remaining = remainingCoverSlots();
+  $("#uploadNote").textContent = remaining
+    ? `当前 ${state.covers.length}/${MAX_COVERS} 张，上传后会自动压缩，系统会选出前三张。`
+    : `当前 ${MAX_COVERS}/${MAX_COVERS} 张，候选封面已满，请先重置后再上传。`;
+  $("#coverInput").disabled = remaining === 0;
+  $("#addMockBtn").disabled = remaining === 0;
+  $("#addMockBtn").textContent = remaining === 0 ? "候选封面已满" : "加入 12 张示例候选";
 }
 
 function renderSampleCount() {
@@ -1198,12 +1212,44 @@ function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
 }
 
-function readFile(file) {
-  return new Promise((resolve) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result);
-    reader.readAsDataURL(file);
-  });
+function arrayBufferToBase64(buffer) {
+  const bytes = new Uint8Array(buffer);
+  const chunkSize = 0x8000;
+  let binary = "";
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
+  }
+  return btoa(binary);
+}
+
+function inferImageMime(buffer, fallbackType = "") {
+  const bytes = new Uint8Array(buffer);
+  if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) return "image/png";
+  if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return "image/jpeg";
+  if (bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46) return "image/gif";
+  if (
+    bytes[0] === 0x52 &&
+    bytes[1] === 0x49 &&
+    bytes[2] === 0x46 &&
+    bytes[3] === 0x46 &&
+    bytes[8] === 0x57 &&
+    bytes[9] === 0x45 &&
+    bytes[10] === 0x42 &&
+    bytes[11] === 0x50
+  ) {
+    return "image/webp";
+  }
+
+  const head = new TextDecoder("utf-8").decode(bytes.slice(0, 512)).trimStart().toLowerCase();
+  if (head.startsWith("<svg") || (head.startsWith("<?xml") && head.includes("<svg"))) return "image/svg+xml";
+  return fallbackType.startsWith("image/") ? fallbackType : "";
+}
+
+async function readFile(file) {
+  const buffer = await file.arrayBuffer();
+  const mime = inferImageMime(buffer, file.type);
+  if (!mime) throw new Error(`无法识别图片格式：${file.name}`);
+  return `data:${mime};base64,${arrayBufferToBase64(buffer)}`;
 }
 
 async function readCompressedFile(file) {
@@ -1216,20 +1262,39 @@ async function readCompressedFile(file) {
 }
 
 $("#coverInput").addEventListener("change", async (event) => {
-  const remaining = MAX_COVERS - state.covers.length;
+  const remaining = remainingCoverSlots();
+  if (remaining === 0) {
+    showCoverLimitNotice();
+    event.target.value = "";
+    renderUploadNote();
+    return;
+  }
   const files = [...event.target.files].slice(0, remaining);
-  if (event.target.files.length > remaining) alert(`本次只加入 ${remaining} 张，候选封面最多 ${MAX_COVERS} 张。`);
+  if (event.target.files.length > remaining) alert(`最多还能加入 ${remaining} 张，本次会自动取前 ${remaining} 张。`);
+  const failed = [];
   for (const file of files) {
-    $("#uploadNote").textContent = `正在压缩：${file.name}`;
-    const image = await readCompressedFile(file);
-    await addCover(file.name.replace(/\.[^.]+$/, ""), image);
+    try {
+      $("#uploadNote").textContent = `正在压缩：${file.name}`;
+      const image = await readCompressedFile(file);
+      await addCover(file.name.replace(/\.[^.]+$/, ""), image);
+    } catch {
+      failed.push(file.name);
+    }
   }
   event.target.value = "";
   renderUploadNote();
+  if (failed.length) alert(`以下图片没有上传成功，请确认是 PNG/JPG/WebP/SVG 图片：${failed.join("、")}`);
 });
 
 $("#addMockBtn").addEventListener("click", async () => {
-  for (const [name, primary, secondary, title, badge] of mockCovers) {
+  const remaining = remainingCoverSlots();
+  if (remaining === 0) {
+    showCoverLimitNotice();
+    return;
+  }
+  const samples = mockCovers.slice(0, remaining);
+  if (samples.length < mockCovers.length) alert(`当前最多还能加入 ${remaining} 张示例候选。`);
+  for (const [name, primary, secondary, title, badge] of samples) {
     await addCover(name, makeMockCover(primary, secondary, title, badge));
   }
 });
@@ -1249,7 +1314,13 @@ document.querySelectorAll(".mode-switch button").forEach((button) => {
 $("#sampleCoverInput").addEventListener("change", async (event) => {
   const file = event.target.files[0];
   if (!file) return;
-  state.pendingSampleImage = await readFile(file);
+  try {
+    state.pendingSampleImage = await readCompressedFile(file);
+  } catch {
+    state.pendingSampleImage = null;
+    event.target.value = "";
+    alert(`样本封面上传失败：${file.name}。请确认是 PNG/JPG/WebP/SVG 图片。`);
+  }
 });
 
 $("#addSampleBtn").addEventListener("click", async () => {
