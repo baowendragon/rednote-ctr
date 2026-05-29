@@ -154,7 +154,30 @@ async function refreshTestsFromApi() {
   }
 }
 
+function sanitizeUtf16(value) {
+  return Array.from(String(value ?? ""))
+    .filter((char) => {
+      const code = char.charCodeAt(0);
+      return !(char.length === 1 && code >= 0xd800 && code <= 0xdfff);
+    })
+    .join("");
+}
+
+function safeTruncate(value, length) {
+  return Array.from(sanitizeUtf16(value)).slice(0, length).join("");
+}
+
+function escapeHtml(value) {
+  return sanitizeUtf16(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
+}
+
 function makeMockCover(primary, secondary, title, badge) {
+  const safeTitle = escapeHtml(title);
+  const safeBadge = escapeHtml(badge);
   const svg = `
     <svg xmlns="http://www.w3.org/2000/svg" width="900" height="1200" viewBox="0 0 900 1200">
       <defs>
@@ -166,15 +189,15 @@ function makeMockCover(primary, secondary, title, badge) {
       <rect width="900" height="1200" fill="url(#bg)"/>
       <rect x="72" y="82" width="756" height="1036" rx="42" fill="rgba(255,255,255,.86)"/>
       <rect x="132" y="172" width="328" height="54" rx="27" fill="${primary}"/>
-      <text x="156" y="209" fill="#fff" font-size="31" font-family="Arial, sans-serif" font-weight="700">${badge}</text>
-      <text x="132" y="430" fill="#1d2129" font-size="82" font-family="Arial, sans-serif" font-weight="900">${title}</text>
+      <text x="156" y="209" fill="#fff" font-size="31" font-family="Arial, sans-serif" font-weight="700">${safeBadge}</text>
+      <text x="132" y="430" fill="#1d2129" font-size="82" font-family="Arial, sans-serif" font-weight="900">${safeTitle}</text>
       <text x="132" y="526" fill="#1d2129" font-size="82" font-family="Arial, sans-serif" font-weight="900">值得点开</text>
       <rect x="132" y="780" width="636" height="178" rx="28" fill="#1d2129"/>
       <text x="174" y="855" fill="#fff" font-size="42" font-family="Arial, sans-serif" font-weight="800">高信息密度</text>
       <text x="174" y="917" fill="#fff" font-size="38" font-family="Arial, sans-serif">主体清晰 · 钩子明确</text>
     </svg>`;
 
-  return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`;
+  return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(sanitizeUtf16(svg))}`;
 }
 
 function getInputs() {
@@ -377,18 +400,24 @@ function getStaticTrainingSamples() {
   return STATIC_CTR_MODEL?.samples?.filter((item) => item.features && Number.isFinite(Number(item.ctr))) || [];
 }
 
+function shouldUseLocalTrainingSamples(localSamples = getLocalTrainingSamples(), staticSamples = getStaticTrainingSamples()) {
+  const staticCount = Number(STATIC_CTR_MODEL?.sampleCount || staticSamples.length || 0);
+  return localSamples.length >= MIN_TRAINING_SAMPLES && (!staticCount || localSamples.length > staticCount);
+}
+
 function getTrainingSamples() {
   const localSamples = getLocalTrainingSamples();
-  return localSamples.length ? localSamples : getStaticTrainingSamples();
+  const staticSamples = getStaticTrainingSamples();
+  return shouldUseLocalTrainingSamples(localSamples, staticSamples) ? localSamples : staticSamples;
 }
 
 function getFeatureWeights() {
-  if (!getLocalTrainingSamples().length && STATIC_CTR_MODEL?.weights) return STATIC_CTR_MODEL.weights;
+  if (!shouldUseLocalTrainingSamples() && STATIC_CTR_MODEL?.weights) return STATIC_CTR_MODEL.weights;
   return DEFAULT_FEATURE_WEIGHTS;
 }
 
 function predictRegressionCtr(features) {
-  const regression = !getLocalTrainingSamples().length ? STATIC_CTR_MODEL?.regression : null;
+  const regression = !shouldUseLocalTrainingSamples() ? STATIC_CTR_MODEL?.regression : null;
   if (!regression?.coefficients) return null;
   const raw = Object.entries(regression.coefficients).reduce((sum, [key, coefficient]) => {
     return sum + Number(coefficient || 0) * ((features[key] || 0) / 100);
@@ -400,8 +429,10 @@ function predictRegressionCtr(features) {
 
 function predictCtr(features) {
   const localSamples = getLocalTrainingSamples();
-  const samples = localSamples.length ? localSamples : getStaticTrainingSamples();
-  const mode = localSamples.length ? "trained" : "offline";
+  const staticSamples = getStaticTrainingSamples();
+  const useLocalSamples = shouldUseLocalTrainingSamples(localSamples, staticSamples);
+  const samples = useLocalSamples ? localSamples : staticSamples;
+  const mode = useLocalSamples ? "trained" : "offline";
   if (samples.length < MIN_TRAINING_SAMPLES) {
     return {
       ctr: fallbackCtr(features, samples),
@@ -867,8 +898,8 @@ function renderLibraryInto(selector) {
   if (!target) return;
   const localSamples = getLocalTrainingSamples();
   const staticSamples = getStaticTrainingSamples();
-  const samples = localSamples.length ? localSamples : staticSamples;
-  const isStaticModel = !localSamples.length && staticSamples.length;
+  const isStaticModel = !shouldUseLocalTrainingSamples(localSamples, staticSamples) && staticSamples.length;
+  const samples = isStaticModel ? staticSamples : localSamples;
 
   if (!samples.length) {
     target.innerHTML = `
@@ -881,19 +912,22 @@ function renderLibraryInto(selector) {
   }
 
   target.innerHTML = samples
-    .map(
-      (item) => `
+    .map((item) => {
+      const name = sanitizeUtf16(item.name);
+      const project = sanitizeUtf16(item.project || item.category || "医美样本");
+      const tags = sanitizeUtf16((item.tags || []).slice(0, 2).join(" / ") || "待打标");
+      return `
         <div class="library-item" data-sample-id="${item.id}">
-          <img src="${item.image || makeMockCover("#e9415a", "#fff0ca", String(item.name).slice(0, 8), isStaticModel ? "离线模型" : "样本")}" alt="${item.name}">
+          <img src="${item.image || makeMockCover("#e9415a", "#fff0ca", safeTruncate(name, 8), isStaticModel ? "离线模型" : "样本")}" alt="${escapeHtml(name)}">
           <div>
-            <strong>${item.name}</strong>
-            <span>${item.project || item.category || "医美样本"} · ${(item.tags || []).slice(0, 2).join(" / ") || "待打标"}</span>
+            <strong>${escapeHtml(name)}</strong>
+            <span>${escapeHtml(project)} · ${escapeHtml(tags)}</span>
           </div>
           <div class="library-score">${item.ctr}%</div>
           ${isStaticModel ? "" : `<button class="icon-button delete-sample-btn" data-sample-id="${item.id}" title="删除样本" type="button">×</button>`}
         </div>
-      `,
-    )
+      `;
+    })
     .join("");
 }
 
@@ -934,7 +968,7 @@ async function createLocalOptimizedVariant(cover, variantIndex = 0) {
   ctx.fillText("高点击版", 105, 136);
   ctx.fillStyle = "#1d2129";
   ctx.font = "900 46px Arial, sans-serif";
-  ctx.fillText($("#titleInput").value.trim().slice(0, 14) || cover.name.slice(0, 14), 270, 136);
+  ctx.fillText(safeTruncate($("#titleInput").value.trim(), 14) || safeTruncate(cover.name, 14), 270, 136);
   ctx.font = "700 28px Arial, sans-serif";
   ctx.fillText("主体更清晰 · 钩子更明确", 270, 176);
 

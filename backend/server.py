@@ -208,7 +208,10 @@ class Handler(SimpleHTTPRequestHandler):
 
     def serve_static(self, path):
         if path in ("", "/"):
-            path = "/app/index.html"
+            self.send_response(302)
+            self.send_header("Location", "/app/")
+            self.end_headers()
+            return
         elif path in ("/app", "/app/"):
             path = "/app/index.html"
         elif path.startswith("/test/"):
