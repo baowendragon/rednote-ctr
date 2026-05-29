@@ -1440,6 +1440,10 @@ async function readCompressedFile(file) {
 }
 
 $("#coverInput").addEventListener("change", async (event) => {
+  if (state.covers.length && confirm(`当前已有 ${state.covers.length} 张候选封面，是否先清空再上传这批新图片？\n确定：清空后上传；取消：继续追加。`)) {
+    clearCandidateCovers({ ask: false });
+  }
+
   const remaining = remainingCoverSlots();
   if (remaining === 0) {
     showCoverLimitNotice();
@@ -1661,13 +1665,23 @@ function handleSampleDelete(event) {
 $("#libraryList")?.addEventListener("click", handleSampleDelete);
 $("#adminLibraryList")?.addEventListener("click", handleSampleDelete);
 
-$("#resetBtn").addEventListener("click", () => {
+function clearCandidateCovers(options = {}) {
+  const ask = options.ask ?? true;
+  if (!state.covers.length) {
+    renderUploadNote();
+    return;
+  }
+  if (ask && !confirm("确定清空当前候选封面吗？")) return;
   state.covers = [];
   state.optimizationCoverId = null;
   state.selectedCoverIds.clear();
   sessionStorage.removeItem(CANDIDATE_STORAGE_KEY);
+  $("#coverInput").value = "";
   render();
-});
+}
+
+$("#resetBtn").addEventListener("click", () => clearCandidateCovers());
+$("#clearCoversBtn").addEventListener("click", () => clearCandidateCovers());
 
 document.querySelectorAll(".segmented button").forEach((button) => {
   button.addEventListener("click", () => {
