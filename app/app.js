@@ -53,6 +53,17 @@ const state = {
 const industryBenchmark = { base: 6.4, label: "医美" };
 const CTR_DISPLAY_MIN = 2.4;
 const CTR_DISPLAY_MAX = 13.8;
+const COVER_TYPES = [
+  { id: "person", label: "真人单人照", description: "真人主体明确，适合对比表情、清晰度和信任感。" },
+  { id: "doctorTrust", label: "医生/顾客合照", description: "医生、机构或面诊场景强化专业背书。" },
+  { id: "beforeAfter", label: "术前术后对比", description: "前后变化或结果对比是主要点击钩子。" },
+  { id: "detail", label: "局部细节特写", description: "鼻、眼、斑、下颌线等部位细节是画面重点。" },
+  { id: "knowledge", label: "项目科普/清单", description: "标题和文字承载主要信息，适合功课、避坑、清单类内容。" },
+  { id: "treatment", label: "治疗过程/仪器", description: "注射、仪器、操作过程或项目体验是主要信息。" },
+  { id: "recovery", label: "恢复记录", description: "恢复期、术后反馈、阶段变化等时间线内容。" },
+  { id: "textInfo", label: "文字信息图", description: "文字信息占主导，图片主体较弱或偏海报化。" },
+];
+const COVER_TYPE_BY_ID = Object.fromEntries(COVER_TYPES.map((type) => [type.id, type]));
 
 const mockCovers = [
   ["抗衰项目对比封面", "#e9415a", "#fff0ca", "抗衰前后", "真实案例"],
@@ -319,7 +330,7 @@ function buildFeatures(visual, inputs) {
   const titleHook = Math.round(inputs.titleScore ?? titleHookScore(title));
   const hasFace = inputs.hasFace ? 100 : 0;
   const hasBeforeAfter = inputs.hasBeforeAfter ? 100 : 0;
-  return {
+  const features = {
     brightness: Math.round(visual.brightnessScore),
     saturation: Math.round(visual.saturationScore),
     contrast: Math.round(visual.contrastScore),
@@ -336,6 +347,8 @@ function buildFeatures(visual, inputs) {
     compositionClarity: clamp(Math.round(visual.brightnessScore * 0.35 + visual.contrastScore * 0.45 + 12), 0, 100),
     thumbnailLegibility: clamp(Math.round(visual.brightnessScore * 0.28 + visual.contrastScore * 0.42 + visual.saturationScore * 0.18 + 8), 0, 100),
   };
+  features.coverType = classifyCoverType(features, inputs);
+  return features;
 }
 
 function inferTags(features, inputs = {}) {
@@ -354,8 +367,40 @@ function inferTags(features, inputs = {}) {
   return tags.slice(0, 5);
 }
 
-function calculateScore(visual) {
-  const inputs = getInputs();
+function includesAny(text, words) {
+  return words.some((word) => text.includes(word));
+}
+
+function classifyCoverType(features = {}, inputs = {}) {
+  const text = sanitizeUtf16(`${inputs.title || inputs.name || ""} ${inputs.project || inputs.category || ""} ${(inputs.tags || []).join(" ")}`);
+  const hasFace = Number(features.hasFace || 0) >= 80;
+  const hasBeforeAfter = Number(features.hasBeforeAfter || 0) >= 80;
+  const textDensity = Number(features.textDensity || 0);
+
+  if (hasBeforeAfter || includesAny(text, ["前后", "对比", "变化", "术前术后", "before", "after"])) {
+    return COVER_TYPE_BY_ID.beforeAfter;
+  }
+  if (includesAny(text, ["医生", "院长", "主任", "面诊", "机构", "顾问", "合照", "案例见证"])) {
+    return COVER_TYPE_BY_ID.doctorTrust;
+  }
+  if (includesAny(text, ["恢复", "术后", "复诊", "反馈", "记录", "第1天", "第7天", "30天", "一个月", "三个月"])) {
+    return COVER_TYPE_BY_ID.recovery;
+  }
+  if (includesAny(text, ["注射", "治疗", "仪器", "操作", "过程", "水光", "热玛吉", "超声炮", "光子", "射频", "针", "打针", "刷酸"])) {
+    return COVER_TYPE_BY_ID.treatment;
+  }
+  if (includesAny(text, ["清单", "避坑", "功课", "攻略", "必问", "预算", "科普", "指南", "怎么选", "问题", "新手"])) {
+    return COVER_TYPE_BY_ID.knowledge;
+  }
+  if (includesAny(text, ["鼻", "眼", "下颌", "法令", "斑", "痘", "泪沟", "毛孔", "轮廓", "嘴", "唇", "黑眼圈", "皮肤", "额头"])) {
+    return COVER_TYPE_BY_ID.detail;
+  }
+  if (!hasFace && textDensity >= 72) return COVER_TYPE_BY_ID.textInfo;
+  return hasFace ? COVER_TYPE_BY_ID.person : COVER_TYPE_BY_ID.textInfo;
+}
+
+function calculateScore(visual, context = {}) {
+  const inputs = { ...getInputs(), name: context.name || visual.name || "" };
   const titleScore = titleHookScore(inputs.title);
   const features = buildFeatures(visual, { ...inputs, titleScore });
   const prediction = predictCtr(features);
@@ -366,6 +411,9 @@ function calculateScore(visual) {
     similarityCtr: prediction.similarityCtr,
     confidence: prediction.confidence,
     similarSamples: prediction.similarSamples,
+    coverType: prediction.coverType,
+    typeSampleCount: prediction.typeSampleCount,
+    typeReferenceMode: prediction.typeReferenceMode,
     predictionMode: prediction.mode,
     titleScore,
     features,
@@ -375,21 +423,13 @@ function calculateScore(visual) {
 
 function buildReason(metrics) {
   if (metrics.predictionMode === "offline") {
-    const sampleText = metrics.similarSamples
-      .slice(0, 2)
-      .map((sample) => `${sample.name} ${sample.ctr}%`)
-      .join("、");
-    if (metrics.regressionCtr) {
-      return `基于已部署的离线回归模型做保守校准，相似样本参考：${sampleText}`;
+    if (metrics.typeReferenceMode === "typed") {
+      return "系统先在同类型历史高 CTR 样本里找相似封面，再结合离线回归模型做保守校准。";
     }
-    return `基于已部署的离线 CTR 模型做保守校准，最接近：${sampleText}`;
+    return "同类型样本暂少，系统使用全库相似样本兜底，并结合离线回归模型做保守校准。";
   }
   if (metrics.predictionMode === "trained") {
-    const sampleText = metrics.similarSamples
-      .slice(0, 2)
-      .map((sample) => `${sample.name} ${sample.ctr}%`)
-      .join("、");
-    return `基于样本库相似封面估算，最接近：${sampleText}`;
+    return `基于本地样本库相似封面估算，并按当前封面类型做参考。`;
   }
   return `训练样本少于 ${MIN_TRAINING_SAMPLES} 条，当前仅用临时基准估算。先导入真实 CTR 样本，预测会更可靠。`;
 }
@@ -438,47 +478,80 @@ function calibrateCtrForDisplay(rawCtr) {
   return Number(clamp(calibrated, CTR_DISPLAY_MIN, CTR_DISPLAY_MAX).toFixed(1));
 }
 
+function sampleCoverType(sample) {
+  if (sample.coverType?.id) return sample.coverType;
+  return classifyCoverType(sample.features || {}, {
+    title: sample.title || sample.name,
+    project: sample.project || sample.category,
+    tags: sample.tags || [],
+  });
+}
+
+function rankSamplesBySimilarity(samples, features, weights, limit = 5) {
+  return samples
+    .map((sample) => {
+      const distance = featureDistance(features, sample.features, weights);
+      const similarity = 1 / Math.pow(distance + 0.08, 2);
+      return { ...sample, coverType: sampleCoverType(sample), distance, similarity };
+    })
+    .sort((a, b) => b.similarity - a.similarity)
+    .slice(0, limit);
+}
+
+function weightedCtr(rankedSamples) {
+  const totalWeight = rankedSamples.reduce((sum, sample) => sum + sample.similarity, 0);
+  if (!totalWeight) return industryBenchmark.base;
+  return rankedSamples.reduce((sum, sample) => sum + Number(sample.ctr) * sample.similarity, 0) / totalWeight;
+}
+
 function predictCtr(features) {
   const localSamples = getLocalTrainingSamples();
   const staticSamples = getStaticTrainingSamples();
   const useLocalSamples = shouldUseLocalTrainingSamples(localSamples, staticSamples);
   const samples = useLocalSamples ? localSamples : staticSamples;
   const mode = useLocalSamples ? "trained" : "offline";
+  const coverType = features.coverType || classifyCoverType(features);
   if (samples.length < MIN_TRAINING_SAMPLES) {
     return {
       ctr: fallbackCtr(features, samples),
       confidence: Math.max(18, samples.length * 12),
       similarSamples: samples.slice(0, 3),
+      coverType,
+      typeSampleCount: 0,
+      typeReferenceMode: "global",
       mode: samples.length ? mode : "fallback",
     };
   }
 
   const weights = getFeatureWeights();
-  const ranked = samples
-    .map((sample) => {
-      const distance = featureDistance(features, sample.features, weights);
-      const similarity = 1 / Math.pow(distance + 0.08, 2);
-      return { ...sample, distance, similarity };
-    })
-    .sort((a, b) => b.similarity - a.similarity)
-    .slice(0, 5);
-
-  const totalWeight = ranked.reduce((sum, sample) => sum + sample.similarity, 0);
-  const similarityCtr = ranked.reduce((sum, sample) => sum + Number(sample.ctr) * sample.similarity, 0) / totalWeight;
+  const typedSamples = samples.filter((sample) => sampleCoverType(sample).id === coverType.id);
+  const useTypedReference = typedSamples.length >= 5;
+  const globalRanked = rankSamplesBySimilarity(samples, features, weights, 5);
+  const typedRanked = useTypedReference ? rankSamplesBySimilarity(typedSamples, features, weights, 5) : [];
+  const ranked = useTypedReference ? typedRanked : globalRanked;
+  const globalSimilarityCtr = weightedCtr(globalRanked);
+  const typeSimilarityCtr = useTypedReference ? weightedCtr(typedRanked) : globalSimilarityCtr;
   const regressionCtr = predictRegressionCtr(features);
-  const rawCtr = regressionCtr === null ? similarityCtr : regressionCtr * 0.72 + similarityCtr * 0.28;
+  const rawCtr =
+    regressionCtr === null
+      ? typeSimilarityCtr * (useTypedReference ? 0.78 : 0.4) + globalSimilarityCtr * (useTypedReference ? 0.22 : 0.6)
+      : regressionCtr * (useTypedReference ? 0.25 : 0.55) + typeSimilarityCtr * (useTypedReference ? 0.6 : 0) + globalSimilarityCtr * (useTypedReference ? 0.15 : 0.45);
   const ctr = calibrateCtrForDisplay(rawCtr);
   const avgSimilarity = ranked.reduce((sum, sample) => sum + sample.similarity, 0) / ranked.length;
   const regressionLift = regressionCtr === null ? 0 : 9;
-  const confidence = clamp(Math.round(Math.min(samples.length / 30, 1) * 42 + Math.min(avgSimilarity / 18, 1) * 44 + regressionLift), 30, 95);
+  const typeLift = useTypedReference ? Math.min(12, Math.round(typedSamples.length / 5)) : 0;
+  const confidence = clamp(Math.round(Math.min(samples.length / 30, 1) * 34 + Math.min(avgSimilarity / 18, 1) * 38 + regressionLift + typeLift), 30, 95);
 
   return {
     ctr,
     rawCtr: Number(rawCtr.toFixed(1)),
     regressionCtr: regressionCtr === null ? null : calibrateCtrForDisplay(regressionCtr),
-    similarityCtr: calibrateCtrForDisplay(similarityCtr),
+    similarityCtr: calibrateCtrForDisplay(typeSimilarityCtr),
     confidence,
     similarSamples: ranked,
+    coverType,
+    typeSampleCount: typedSamples.length,
+    typeReferenceMode: useTypedReference ? "typed" : "global",
     mode,
   };
 }
@@ -522,7 +595,7 @@ async function addCover(name, image) {
     return;
   }
   const visual = await analyzeImage(image);
-  const metrics = calculateScore(visual);
+  const metrics = calculateScore(visual, { name });
   state.covers.push({
     id: crypto.randomUUID(),
     name,
@@ -537,7 +610,7 @@ async function addCover(name, image) {
 
 function recalculateAll() {
   state.covers = state.covers.map((cover) => {
-    const metrics = calculateScore(cover);
+    const metrics = calculateScore(cover, { name: cover.name });
     return { ...cover, ...metrics, reason: buildReason(metrics) };
   });
   saveCandidateState();
@@ -568,7 +641,7 @@ function render() {
   renderRecommendation();
   renderOptimizationPanel();
   renderTestPublishPanel();
-  renderLibrary();
+  renderModelStatus();
   renderUploadNote();
   renderSampleCount();
   renderAdmin();
@@ -598,6 +671,8 @@ function renderCovers() {
     node.classList.toggle("selected-test", state.selectedCoverIds.has(cover.id));
 
     const metrics = [
+      ["封面类型", cover.coverType?.label || "通用封面"],
+      ["同类样本", cover.typeSampleCount || 0],
       ["视觉亮度", cover.brightnessScore],
       ["色彩刺激", cover.saturationScore],
       ["主体反差", cover.contrastScore],
@@ -605,7 +680,10 @@ function renderCovers() {
     ];
 
     node.querySelector(".metrics").innerHTML = metrics
-      .map(([label, value]) => `<div><dt>${label}</dt><dd>${Math.round(value)}</dd></div>`)
+      .map(([label, value]) => {
+        const displayValue = Number.isFinite(Number(value)) ? Math.round(Number(value)) : escapeHtml(value);
+        return `<div><dt>${label}</dt><dd>${displayValue}</dd></div>`;
+      })
       .join("");
     coverGrid.appendChild(node);
   });
@@ -627,24 +705,24 @@ function renderRecommendation() {
   }
 
   const inputs = getInputs();
-  const topList = topPicks.map((cover, index) => `${index + 1}. ${cover.name}：预估 ${cover.ctr}%`).join("<br>");
-  const similarList = best.similarSamples?.length
-    ? `<ul class="similar-list">${best.similarSamples
-        .slice(0, 3)
-        .map((sample) => `<li><span>${sample.name}</span><strong>${sample.ctr}%</strong></li>`)
-        .join("")}</ul>`
-    : "";
+  const topList = topPicks
+    .map((cover, index) => `${index + 1}. ${escapeHtml(cover.name)}：${escapeHtml(cover.coverType?.label || "通用封面")}，校准预估 ${cover.ctr}%`)
+    .join("<br>");
+  const typeSummary = best.typeReferenceMode === "typed"
+    ? `已优先参考 ${best.typeSampleCount} 张「${escapeHtml(best.coverType?.label || "同类型")}」历史封面。`
+    : `「${escapeHtml(best.coverType?.label || "同类型")}」样本不足，已使用全库相似样本兜底。`;
+  const categoryLabel = escapeHtml(inputs.categoryLabel || industryBenchmark.label);
+  const audience = escapeHtml(inputs.audience || "未填写");
   const sampleWarning =
     getTrainingSamples().length < MIN_TRAINING_SAMPLES
       ? `<p>当前训练样本不足 ${MIN_TRAINING_SAMPLES} 条，预测只是临时估算。请先录入带真实 CTR 的历史优质封面。</p>`
       : "";
   recommendation.innerHTML = `
     <strong>优先测试前三张</strong>
-    <p>行业固定为${inputs.categoryLabel}，目标人群是${inputs.audience || "未填写"}。</p>
+    <p>行业固定为${categoryLabel}，目标人群是${audience}。</p>
     <div class="callout">${topList}</div>
     <span class="confidence">模型置信度 ${best.confidence}%</span>
-    <p>首推 ${best.name}。${best.reason}</p>
-    ${similarList}
+    <p>首推 ${escapeHtml(best.name)}。${typeSummary}${escapeHtml(best.reason)}</p>
     ${sampleWarning}
     <p>下一步建议：把前三张作为 A/B/C 版测试，用真实曝光和点击数据回填样本库。</p>
   `;
@@ -895,47 +973,62 @@ function renderSampleCount() {
   $("#sampleCount").textContent = getTrainingSamples().length;
 }
 
-function renderLibrary() {
-  renderLibraryInto("#libraryList");
-  renderLibraryInto("#adminLibraryList");
+function modelGeneratedDate() {
+  if (!STATIC_CTR_MODEL?.generatedAt) return "未记录";
+  try {
+    return new Date(STATIC_CTR_MODEL.generatedAt).toLocaleString("zh-CN", { hour12: false });
+  } catch {
+    return "未记录";
+  }
 }
 
-function renderLibraryInto(selector) {
+function typeDistribution(samples) {
+  const counts = new Map();
+  samples.forEach((sample) => {
+    const type = sampleCoverType(sample);
+    counts.set(type.id, { ...type, count: (counts.get(type.id)?.count || 0) + 1 });
+  });
+  return [...counts.values()].sort((a, b) => b.count - a.count);
+}
+
+function renderModelStatus() {
+  renderModelStatusInto("#modelStatus");
+  renderModelStatusInto("#adminModelStatus");
+}
+
+function renderModelStatusInto(selector) {
   const target = $(selector);
   if (!target) return;
   const localSamples = getLocalTrainingSamples();
   const staticSamples = getStaticTrainingSamples();
-  const isStaticModel = !shouldUseLocalTrainingSamples(localSamples, staticSamples) && staticSamples.length;
-  const samples = isStaticModel ? staticSamples : localSamples;
+  const useLocal = shouldUseLocalTrainingSamples(localSamples, staticSamples);
+  const samples = useLocal ? localSamples : staticSamples;
+  const types = typeDistribution(samples).slice(0, 5);
+  const diagnostics = STATIC_CTR_MODEL?.regression?.diagnostics;
 
   if (!samples.length) {
     target.innerHTML = `
       <div class="recommendation">
-        <strong>样本库为空</strong>
-        <p>录入优质封面和真实点击率后，先在本地运行离线训练脚本，再部署模型文件。</p>
+        <strong>模型未加载</strong>
+        <p>请确认 trained-model.js 已部署，或在本地重新运行离线训练脚本。</p>
       </div>
     `;
     return;
   }
 
-  target.innerHTML = samples
-    .map((item) => {
-      const name = sanitizeUtf16(item.name);
-      const project = sanitizeUtf16(item.project || item.category || "医美样本");
-      const tags = sanitizeUtf16((item.tags || []).slice(0, 2).join(" / ") || "待打标");
-      return `
-        <div class="library-item" data-sample-id="${item.id}">
-          <img src="${item.image || makeMockCover("#e9415a", "#fff0ca", safeTruncate(name, 8), isStaticModel ? "离线模型" : "样本")}" alt="${escapeHtml(name)}">
-          <div>
-            <strong>${escapeHtml(name)}</strong>
-            <span>${escapeHtml(project)} · ${escapeHtml(tags)}</span>
-          </div>
-          <div class="library-score">${item.ctr}%</div>
-          ${isStaticModel ? "" : `<button class="icon-button delete-sample-btn" data-sample-id="${item.id}" title="删除样本" type="button">×</button>`}
-        </div>
-      `;
-    })
-    .join("");
+  target.innerHTML = `
+    <div class="status-grid">
+      <div><span>模型来源</span><strong>${useLocal ? "本地临时样本" : "线上离线模型"}</strong></div>
+      <div><span>训练样本</span><strong>${samples.length}</strong></div>
+      <div><span>预测策略</span><strong>同类型优先</strong></div>
+      <div><span>展示口径</span><strong>保守校准 CTR</strong></div>
+    </div>
+    <p class="status-text">最近训练：${modelGeneratedDate()}。线上只加载训练产物，不在用户上传时调用大模型。</p>
+    ${diagnostics ? `<p class="status-text">回归诊断：MAE ${diagnostics.mae}，R² ${diagnostics.r2}。当前更适合做多图排序和前三筛选。</p>` : ""}
+    <div class="type-list">
+      ${types.map((type) => `<span>${escapeHtml(type.label)} <b>${type.count}</b></span>`).join("")}
+    </div>
+  `;
 }
 
 function renderAdmin() {
@@ -1435,8 +1528,8 @@ function clearSamples() {
 }
 
 $("#loadProjectSamplesBtn").addEventListener("click", loadProjectSamples);
-$("#clearSamplesBtn").addEventListener("click", clearSamples);
-$("#adminClearSamplesBtn").addEventListener("click", clearSamples);
+$("#clearSamplesBtn")?.addEventListener("click", clearSamples);
+$("#adminClearSamplesBtn")?.addEventListener("click", clearSamples);
 $("#triggerLearningBtn").addEventListener("click", runLearningAnalysis);
 $("#publishTestBtn").addEventListener("click", publishTest);
 $("#clearTestsBtn").addEventListener("click", async () => {
@@ -1565,8 +1658,8 @@ function handleSampleDelete(event) {
   recalculateAll();
 }
 
-$("#libraryList").addEventListener("click", handleSampleDelete);
-$("#adminLibraryList").addEventListener("click", handleSampleDelete);
+$("#libraryList")?.addEventListener("click", handleSampleDelete);
+$("#adminLibraryList")?.addEventListener("click", handleSampleDelete);
 
 $("#resetBtn").addEventListener("click", () => {
   state.covers = [];

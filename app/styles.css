@@ -496,6 +496,9 @@ select:focus {
 .metrics dd {
   margin: 2px 0 0;
   font-weight: 760;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .reason {
@@ -537,7 +540,8 @@ select:focus {
 
 .recommendation,
 .optimization-panel,
-.library-list {
+.library-list,
+.model-status {
   display: grid;
   gap: 10px;
 }
@@ -588,6 +592,51 @@ select:focus {
   padding: 10px 12px;
   color: #55313a;
   line-height: 1.55;
+}
+
+.status-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.status-grid div {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfcfe;
+  padding: 10px;
+}
+
+.status-grid span {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.status-grid strong {
+  display: block;
+  margin-top: 4px;
+  font-size: 16px;
+}
+
+.type-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.type-list span {
+  border-radius: 999px;
+  background: rgba(21, 122, 120, 0.1);
+  color: #276462;
+  padding: 5px 9px;
+  font-size: 12px;
+  font-weight: 720;
+}
+
+.type-list b {
+  margin-left: 3px;
+  color: var(--teal);
 }
 
 .library-item {
