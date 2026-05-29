@@ -51,6 +51,8 @@ const state = {
 };
 
 const industryBenchmark = { base: 6.4, label: "医美" };
+const CTR_DISPLAY_MIN = 2.4;
+const CTR_DISPLAY_MAX = 13.8;
 
 const mockCovers = [
   ["抗衰项目对比封面", "#e9415a", "#fff0ca", "抗衰前后", "真实案例"],
@@ -378,9 +380,9 @@ function buildReason(metrics) {
       .map((sample) => `${sample.name} ${sample.ctr}%`)
       .join("、");
     if (metrics.regressionCtr) {
-      return `基于已部署的离线回归模型估算，回归预测 ${metrics.regressionCtr}%，相似样本参考：${sampleText}`;
+      return `基于已部署的离线回归模型做保守校准，相似样本参考：${sampleText}`;
     }
-    return `基于已部署的离线 CTR 模型估算，最接近：${sampleText}`;
+    return `基于已部署的离线 CTR 模型做保守校准，最接近：${sampleText}`;
   }
   if (metrics.predictionMode === "trained") {
     const sampleText = metrics.similarSamples
@@ -427,6 +429,15 @@ function predictRegressionCtr(features) {
   return clamp(raw, min * 0.72, max * 1.04);
 }
 
+function calibrateCtrForDisplay(rawCtr) {
+  const raw = Number(rawCtr);
+  if (!Number.isFinite(raw)) return industryBenchmark.base;
+  const modelBaseline = Number(STATIC_CTR_MODEL?.baselineCtr || industryBenchmark.base * 2.5);
+  const ratio = clamp(raw / Math.max(modelBaseline, 1), 0.2, 3.2);
+  const calibrated = industryBenchmark.base * (0.62 + 0.58 * Math.pow(ratio, 0.62));
+  return Number(clamp(calibrated, CTR_DISPLAY_MIN, CTR_DISPLAY_MAX).toFixed(1));
+}
+
 function predictCtr(features) {
   const localSamples = getLocalTrainingSamples();
   const staticSamples = getStaticTrainingSamples();
@@ -455,15 +466,17 @@ function predictCtr(features) {
   const totalWeight = ranked.reduce((sum, sample) => sum + sample.similarity, 0);
   const similarityCtr = ranked.reduce((sum, sample) => sum + Number(sample.ctr) * sample.similarity, 0) / totalWeight;
   const regressionCtr = predictRegressionCtr(features);
-  const ctr = regressionCtr === null ? similarityCtr : regressionCtr * 0.72 + similarityCtr * 0.28;
+  const rawCtr = regressionCtr === null ? similarityCtr : regressionCtr * 0.72 + similarityCtr * 0.28;
+  const ctr = calibrateCtrForDisplay(rawCtr);
   const avgSimilarity = ranked.reduce((sum, sample) => sum + sample.similarity, 0) / ranked.length;
   const regressionLift = regressionCtr === null ? 0 : 9;
   const confidence = clamp(Math.round(Math.min(samples.length / 30, 1) * 42 + Math.min(avgSimilarity / 18, 1) * 44 + regressionLift), 30, 95);
 
   return {
-    ctr: Number(ctr.toFixed(1)),
-    regressionCtr: regressionCtr === null ? null : Number(regressionCtr.toFixed(1)),
-    similarityCtr: Number(similarityCtr.toFixed(1)),
+    ctr,
+    rawCtr: Number(rawCtr.toFixed(1)),
+    regressionCtr: regressionCtr === null ? null : calibrateCtrForDisplay(regressionCtr),
+    similarityCtr: calibrateCtrForDisplay(similarityCtr),
     confidence,
     similarSamples: ranked,
     mode,
@@ -481,11 +494,11 @@ function featureDistance(a, b, weights = DEFAULT_FEATURE_WEIGHTS) {
 function fallbackCtr(features, samples) {
   if (samples.length) {
     const avgCtr = samples.reduce((sum, sample) => sum + Number(sample.ctr), 0) / samples.length;
-    return Number(avgCtr.toFixed(1));
+    return calibrateCtrForDisplay(avgCtr);
   }
 
   if (STATIC_CTR_MODEL?.baselineCtr) {
-    return Number(STATIC_CTR_MODEL.baselineCtr.toFixed(1));
+    return calibrateCtrForDisplay(STATIC_CTR_MODEL.baselineCtr);
   }
 
   const raw =
@@ -496,17 +509,11 @@ function fallbackCtr(features, samples) {
     features.titleHook * 0.22 +
     features.hasFace * 0.08 +
     features.hasBeforeAfter * 0.09;
-  return Number(Math.max(2.1, industryBenchmark.base * (0.72 + raw / 120)).toFixed(1));
+  return Number(clamp(industryBenchmark.base * (0.72 + raw / 120), CTR_DISPLAY_MIN, CTR_DISPLAY_MAX).toFixed(1));
 }
 
 function ctrToScore(ctr) {
-  const samples = getTrainingSamples();
-  if (!samples.length) return clamp(Math.round(ctr * 8), 25, 98);
-  const values = samples.map((sample) => Number(sample.ctr));
-  const min = Math.min(...values);
-  const max = Math.max(...values);
-  if (max === min) return 72;
-  return clamp(Math.round(((ctr - min) / (max - min)) * 70 + 25), 25, 98);
+  return clamp(Math.round(((ctr - CTR_DISPLAY_MIN) / (CTR_DISPLAY_MAX - CTR_DISPLAY_MIN)) * 70 + 25), 25, 98);
 }
 
 async function addCover(name, image) {
