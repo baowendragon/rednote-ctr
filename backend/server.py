@@ -214,6 +214,8 @@ class Handler(SimpleHTTPRequestHandler):
             return
         elif path in ("/app", "/app/"):
             path = "/app/index.html"
+        elif path.startswith("/test/") and Path(path).name in {"styles.css", "trained-model.js", "app.js"}:
+            path = f"/app/{Path(path).name}"
         elif path.startswith("/test/"):
             path = "/app/index.html"
         decoded = unquote(path).lstrip("/")
