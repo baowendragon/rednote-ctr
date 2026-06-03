@@ -843,6 +843,7 @@ function renderTestDashboard() {
             <button class="secondary-button view-results-btn" data-test-id="${test.id}" type="button">${isActive ? "当前查看" : "查看结果"}</button>
             <button class="secondary-button open-test-btn" data-test-id="${test.id}" type="button">打开内测页</button>
             <button class="secondary-button copy-test-btn" data-url="${url}" type="button">复制链接</button>
+            <button class="text-button delete-test-btn" data-test-id="${test.id}" type="button">删除</button>
           </div>
         </article>
       `;
@@ -885,6 +886,28 @@ function formatDateTime(value) {
 
 function rankTestCovers(test) {
   return [...test.covers].sort((a, b) => Number(testCtr(b)) - Number(testCtr(a)));
+}
+
+async function deleteTestSession(testId, options = {}) {
+  const test = state.tests.find((item) => item.id === testId);
+  if (!test) return;
+  const ask = options.ask ?? true;
+  const label = `${test.title}（${formatDateTime(test.createdAt)}）`;
+  if (ask && !confirm(`确定删除这场内测吗？\n${label}`)) return;
+
+  try {
+    if (API_ENABLED) await apiRequest(`/api/tests/${testId}`, { method: "DELETE" });
+  } catch (error) {
+    alert(`删除失败：${error.message || "请稍后重试"}`);
+    return;
+  }
+
+  state.tests = state.tests.filter((item) => item.id !== testId);
+  if (state.selectedTestId === testId) {
+    state.selectedTestId = state.tests[0]?.id || null;
+  }
+  saveTests();
+  render();
 }
 
 function makeTestUrl(testId) {
@@ -1547,16 +1570,9 @@ $("#adminClearSamplesBtn")?.addEventListener("click", clearSamples);
 $("#triggerLearningBtn").addEventListener("click", runLearningAnalysis);
 $("#publishTestBtn").addEventListener("click", publishTest);
 $("#clearTestsBtn").addEventListener("click", async () => {
-  if (!confirm("确定清空所有内测记录吗？")) return;
-  try {
-    await apiRequest("/api/tests", { method: "DELETE" });
-  } catch {
-    // File mode and static-only mode clear local records only.
-  }
-  state.tests = [];
-  state.selectedTestId = null;
-  saveTests();
-  render();
+  const targetId = state.selectedTestId || state.tests[0]?.id;
+  if (!targetId) return;
+  await deleteTestSession(targetId);
 });
 
 $("#sampleTableInput").addEventListener("change", (event) => {
@@ -1628,6 +1644,7 @@ $("#testList").addEventListener("click", async (event) => {
   const viewButton = event.target.closest(".view-results-btn");
   const openButton = event.target.closest(".open-test-btn");
   const copyButton = event.target.closest(".copy-test-btn");
+  const deleteButton = event.target.closest(".delete-test-btn");
   if (viewButton) {
     state.selectedTestId = viewButton.dataset.testId;
     renderTestDashboard();
@@ -1646,6 +1663,10 @@ $("#testList").addEventListener("click", async (event) => {
     } catch {
       prompt("复制这个内测链接：", copyButton.dataset.url);
     }
+    return;
+  }
+  if (deleteButton) {
+    await deleteTestSession(deleteButton.dataset.testId);
   }
 });
 

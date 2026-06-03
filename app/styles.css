@@ -733,10 +733,13 @@ select:focus {
 
 .test-item-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
+  justify-content: flex-end;
 }
 
-.test-item-actions .secondary-button {
+.test-item-actions .secondary-button,
+.test-item-actions .text-button {
   width: auto;
   margin: 0;
   white-space: nowrap;

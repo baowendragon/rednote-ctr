@@ -116,6 +116,8 @@ class Handler(SimpleHTTPRequestHandler):
                 conn.execute("delete from test_items")
                 conn.execute("delete from test_sessions")
             return self.json_response({"ok": True})
+        if path.startswith("/api/tests/"):
+            return self.api_delete_test(path.split("/")[-1])
         return self.json_response({"error": "Not found"}, 404)
 
     def read_json(self):
@@ -145,6 +147,15 @@ class Handler(SimpleHTTPRequestHandler):
         if not payload:
             return self.json_response({"error": "Not found"}, 404)
         return self.json_response(payload)
+
+    def api_delete_test(self, session_id):
+        with db() as conn:
+            exists = conn.execute("select id from test_sessions where id = ?", (session_id,)).fetchone()
+            if not exists:
+                return self.json_response({"error": "Not found"}, 404)
+            conn.execute("delete from test_items where session_id = ?", (session_id,))
+            conn.execute("delete from test_sessions where id = ?", (session_id,))
+        return self.json_response({"ok": True})
 
     def api_create_test(self):
         payload = self.read_json()
