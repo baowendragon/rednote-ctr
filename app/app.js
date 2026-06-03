@@ -45,6 +45,7 @@ const state = {
   selectedCoverIds: new Set(savedCandidateState.selectedCoverIds),
   sort: "score",
   optimizationCoverId: null,
+  selectedTestId: null,
   pendingSampleImage: null,
   pendingImportFile: null,
   currentView: "front",
@@ -822,16 +823,24 @@ function renderTestDashboard() {
     return;
   }
 
+  let selectedTest = state.tests.find((test) => test.id === state.selectedTestId);
+  if (!selectedTest) {
+    selectedTest = state.tests[0];
+    state.selectedTestId = selectedTest.id;
+  }
+
   list.innerHTML = state.tests
     .map((test) => {
       const url = makeTestUrl(test.id);
+      const isActive = test.id === selectedTest.id;
       return `
-        <article class="test-item" data-test-id="${test.id}">
+        <article class="test-item${isActive ? " active" : ""}" data-test-id="${test.id}">
           <div>
-            <strong>${test.title}</strong>
-    <span>${formatDateTime(test.createdAt)} · ${test.covers.length} 张封面</span>
+            <strong>${escapeHtml(test.title)}</strong>
+            <span>${formatDateTime(test.createdAt)} · ${test.covers.length} 张封面</span>
           </div>
           <div class="test-item-actions">
+            <button class="secondary-button view-results-btn" data-test-id="${test.id}" type="button">${isActive ? "当前查看" : "查看结果"}</button>
             <button class="secondary-button open-test-btn" data-test-id="${test.id}" type="button">打开内测页</button>
             <button class="secondary-button copy-test-btn" data-url="${url}" type="button">复制链接</button>
           </div>
@@ -840,20 +849,19 @@ function renderTestDashboard() {
     })
     .join("");
 
-  const latest = state.tests[0];
-  const ranked = rankTestCovers(latest);
+  const ranked = rankTestCovers(selectedTest);
   results.innerHTML = `
-    <strong>${latest.title}</strong>
-    <p>最近一场内测结果，按实测点击率排序。</p>
+    <strong>${escapeHtml(selectedTest.title)}</strong>
+    <p>当前查看：${formatDateTime(selectedTest.createdAt)}，按实测点击率排序。</p>
     <div class="result-table">
       ${ranked
         .map(
           (cover, index) => `
             <div class="result-row">
               <span>${index + 1}</span>
-              <img src="${cover.image}" alt="${cover.name}">
+              <img src="${cover.image}" alt="${escapeHtml(cover.name)}">
               <div>
-                <strong>${cover.name}</strong>
+                <strong>${escapeHtml(cover.name)}</strong>
                 <small>曝光 ${cover.views || 0} · 点击 ${cover.clicks || 0}</small>
               </div>
               <b>${testCtr(cover)}%</b>
@@ -922,6 +930,7 @@ async function publishTest() {
     });
 
     state.tests = [test, ...state.tests.filter((item) => item.id !== test.id)];
+    state.selectedTestId = test.id;
     state.selectedCoverIds.clear();
     saveCandidateState();
     saveTests();
@@ -942,6 +951,7 @@ async function publishTest() {
         })),
       };
       state.tests.unshift(test);
+      state.selectedTestId = test.id;
       state.selectedCoverIds.clear();
       saveCandidateState();
       saveTests();
@@ -1544,6 +1554,7 @@ $("#clearTestsBtn").addEventListener("click", async () => {
     // File mode and static-only mode clear local records only.
   }
   state.tests = [];
+  state.selectedTestId = null;
   saveTests();
   render();
 });
@@ -1614,9 +1625,16 @@ coverGrid.addEventListener("click", (event) => {
 });
 
 $("#testList").addEventListener("click", async (event) => {
+  const viewButton = event.target.closest(".view-results-btn");
   const openButton = event.target.closest(".open-test-btn");
   const copyButton = event.target.closest(".copy-test-btn");
+  if (viewButton) {
+    state.selectedTestId = viewButton.dataset.testId;
+    renderTestDashboard();
+    return;
+  }
   if (openButton) {
+    state.selectedTestId = openButton.dataset.testId;
     history.pushState({}, "", makeTestUrl(openButton.dataset.testId));
     showPublicTestFromHash();
     return;

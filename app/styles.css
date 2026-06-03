@@ -714,6 +714,12 @@ select:focus {
   padding: 12px;
 }
 
+.test-item.active {
+  border-color: rgba(233, 65, 90, 0.7);
+  background: #fff8fa;
+  box-shadow: 0 0 0 3px rgba(233, 65, 90, 0.08);
+}
+
 .test-item strong,
 .result-row strong {
   display: block;
